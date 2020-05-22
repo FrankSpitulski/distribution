@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -181,13 +182,27 @@ func newAccessController(options map[string]interface{}) (auth.AccessController,
 		return nil, err
 	}
 
-	fp, err := os.Open(config.rootCertBundle)
-	if err != nil {
-		return nil, fmt.Errorf("unable to open token auth root certificate bundle file %q: %s", config.rootCertBundle, err)
-	}
-	defer fp.Close()
+	var rootCertBundleReader io.ReadCloser
+	if strings.HasPrefix(config.rootCertBundle, "https://") || strings.HasPrefix(config.rootCertBundle, "http://") {
+		response, err := http.Get(config.rootCertBundle)
+		if err != nil {
+			return nil, fmt.Errorf("unable to fetch token auth root certificate bundle file %q: %s", config.rootCertBundle, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			return nil, fmt.Errorf("unable to fetch token auth root certificate bundle file %q: http status %s", config.rootCertBundle, response.Status)
+		}
+		rootCertBundleReader = response.Body
+	} else {
+		rootCertBundleReader, err = os.Open(config.rootCertBundle)
+		if err != nil {
+			return nil, fmt.Errorf("unable to open token auth root certificate bundle file %q: %s", config.rootCertBundle, err)
+		}
 
-	rawCertBundle, err := ioutil.ReadAll(fp)
+	}
+	defer rootCertBundleReader.Close()
+
+	rawCertBundle, err := ioutil.ReadAll(rootCertBundleReader)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read token auth root certificate bundle file %q: %s", config.rootCertBundle, err)
 	}
@@ -285,9 +300,4 @@ func (ac *accessController) Authorized(ctx context.Context, accessItems ...auth.
 	ctx = auth.WithResources(ctx, token.resources())
 
 	return auth.WithUser(ctx, auth.UserInfo{Name: token.Claims.Subject}), nil
-}
-
-// init handles registering the token auth backend.
-func init() {
-	auth.Register("token", auth.InitFunc(newAccessController))
 }
